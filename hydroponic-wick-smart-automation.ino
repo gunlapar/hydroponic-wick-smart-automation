@@ -2,17 +2,17 @@
 #include <PubSubClient.h>
 #include <DHT.h>
 
-// ====== Konfigurasi WiFi ======
-const char* ssid       = "SIJA-PNP";
-const char* wifiPass   = "12345678";
+// Konfig WiFi 
+const char* ssid       = "your wifi ssid";
+const char* wifiPass   = "Your wifi password";
 
-// ====== Konfigurasi MQTT ======
-const char* mqtt_server   = "10.20.11.11";
+// Konfig MQTT 
+const char* mqtt_server   = "your mqtt server";
 const int   mqtt_port     = 1883;
-const char* mqtt_user     = "onlykelompok4canusethisuser";  
-const char* mqtt_pass     = "#123@#4";   
+const char* mqtt_user     = "your mqtt user";  
+const char* mqtt_pass     = "your mqtt password";   
 
-// ====== Topik MQTT ======
+// Topik MQTT 
 const char* topic_water_level    = "kel4/water_level";
 const char* topic_temperature    = "kel4/suhu";
 const char* topic_humidity       = "kel4/kelembapan";
@@ -24,20 +24,20 @@ const char* topic_threshold_set  = "kel4/threshold/set";      // format: "25,75"
 const char* topic_threshold_get  = "kel4/threshold/status";
 const char* topic_system_status  = "kel4/system/status";      // JSON status lengkap
 
-// ====== Pin Konfigurasi ======
+// Pin Konfig
 #define WATER_LEVEL_PIN A0   // Sensor level air ke A0
 #define DHT_PIN         D4   // DHT11 data ke D4
 #define RELAY_PIN       D2   // Relay pompa ke D2
 
-// ====== Inisialisasi DHT ======
+// inisialisasi DHT
 #define DHTTYPE DHT11
 DHT dht(DHT_PIN, DHTTYPE);
 
-// ====== Global vars ======
+// Global vars
 WiFiClient    espClient;
 PubSubClient  client(espClient);
 
-// ====== Timing ======
+// Time
 unsigned long lastMsg         = 0;
 unsigned long pumpStartTime   = 0;
 unsigned long pumpStopTime    = 0;
@@ -45,17 +45,17 @@ const long    interval        = 5000;     // Interval publish sensor (5 detik)
 const long    maxPumpRunTime  = 480000;   // 8 menit (480 detik) 480000
 const long    minPumpRestTime = 10;   // 5 menit (300 detik) 300000
 
-// ====== System State ======
+// System State
 enum PumpMode { AUTO, MANUAL };
 PumpMode currentMode = AUTO;
 bool pumpState = false;
 bool manualPumpCommand = false;
 
-// ====== Threshold Settings ======
+// threshold Settings 
 int thresholdLow  = 25;  // Pompa ON jika water level < 25%
 int thresholdHigh = 75;  // Pompa OFF jika water level > 75%
 
-// ====== Safety Flags ======
+// safety
 bool sensorError = false;
 bool pumpOverTime = false;
 bool pumpInRestPeriod = false;
@@ -86,7 +86,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
 
   Serial.println("MQTT Received - Topic: " + String(topic) + " | Message: " + msg);
 
-  // ====== Kontrol Mode ======
+  //  kontrol Mode 
   if (String(topic) == topic_mode_control) {
     if (msg == "auto") {
       currentMode = AUTO;
@@ -98,7 +98,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
     publishModeStatus();
   }
   
-  // ====== Kontrol Pompa Manual ======
+  // Kontrol Pompa Manual
   else if (String(topic) == topic_pump_control) {
     if (currentMode == MANUAL) {
       if (msg == "on" || msg == "1" || msg == "true" || msg == "nyala") {
@@ -113,7 +113,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
     }
   }
   
-  // ====== Set Threshold ======
+  // set Threshold
   else if (String(topic) == topic_threshold_set) {
     int commaIndex = msg.indexOf(',');
     if (commaIndex > 0) {
@@ -134,7 +134,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
 
 void controlPump(bool state) {
   if (state && !pumpState) {
-    // Cek apakah pompa masih dalam periode istirahat
+    // Cek pompa masih dalam periode istirahat
     if (pumpInRestPeriod && (millis() - pumpStopTime < minPumpRestTime)) {
       Serial.println("Pump in rest period. Cannot start yet.");
       return;
@@ -273,14 +273,14 @@ void loop() {
   if (now - lastMsg > interval) {
     lastMsg = now;
 
-    // ====== Baca Sensor Water Level ======
+    // Baca Sensor Water Level 
     int rawLevel = analogRead(WATER_LEVEL_PIN);
     int levelPct = map(constrain(rawLevel, 0, 800), 0, 800, 0, 100);
     
     // Deteksi sensor error (nilai tidak masuk akal)
     sensorError = (rawLevel < 5 || rawLevel > 1020);
 
-    // ====== Baca DHT11 ======
+    // Baca DHT11
     float h = dht.readHumidity();
     float t = dht.readTemperature();
 
@@ -289,7 +289,7 @@ void loop() {
       h = 0; t = 0;
     }
 
-    // ====== Logic Control ======
+    // Logic Control
     if (currentMode == AUTO && !sensorError) {
       autoModeLogic(levelPct);
     } else if (currentMode == MANUAL) {
