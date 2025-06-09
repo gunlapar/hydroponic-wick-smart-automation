@@ -3,14 +3,14 @@
 #include <DHT.h>
 
 // ====== Konfigurasi WiFi ======
-const char* ssid       = "SIJA-PNP";
-const char* wifiPass   = "12345678";
+const char* ssid       = "your wifi ssid";
+const char* wifiPass   = "Your wifi password";
 
 // ====== Konfigurasi MQTT ======
-const char* mqtt_server   = "10.20.11.11";
+const char* mqtt_server   = "your mqtt server";
 const int   mqtt_port     = 1883;
-const char* mqtt_user     = "onlykelompok4canusethisuser";  
-const char* mqtt_pass     = "#123@#4";   
+const char* mqtt_user     = "your mqtt user";  
+const char* mqtt_pass     = "your mqtt password";   
 
 // ====== Topik MQTT ======
 const char* topic_water_level    = "kel4/water_level";
