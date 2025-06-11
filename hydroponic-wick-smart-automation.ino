@@ -1,18 +1,20 @@
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
 #include <DHT.h>
+#include <WiFiManager.h>          // WiFi Manager library
+#include <ArduinoJson.h>          // Untuk parsing JSON di WiFi Manager
 
-// Konfig WiFi 
-const char* ssid       = "your wifi ssid";
-const char* wifiPass   = "Your wifi password";
+// ====== Konfigurasi WiFi (Fallback) ======
+const char* fallback_ssid     = "your wifi";
+const char* fallback_wifiPass = "wifi password";
 
-// Konfig MQTT 
-const char* mqtt_server   = "your mqtt server";
-const int   mqtt_port     = 1883;
-const char* mqtt_user     = "your mqtt user";  
-const char* mqtt_pass     = "your mqtt password";   
+// ====== Konfigurasi MQTT (Default) ======
+char mqtt_server[40] = "your mqtt server";
+char mqtt_port[6]    = "1883";
+char mqtt_user[50]   = "your mqttuser";  
+char mqtt_pass[50]   = "your mqtt pass";   
 
-// Topik MQTT 
+// ====== Topik MQTT ======
 const char* topic_water_level    = "kel4/water_level";
 const char* topic_temperature    = "kel4/suhu";
 const char* topic_humidity       = "kel4/kelembapan";
@@ -24,56 +26,134 @@ const char* topic_threshold_set  = "kel4/threshold/set";      // format: "25,75"
 const char* topic_threshold_get  = "kel4/threshold/status";
 const char* topic_system_status  = "kel4/system/status";      // JSON status lengkap
 
-// Pin Konfig
+// ====== Pin Konfigurasi ======
 #define WATER_LEVEL_PIN A0   // Sensor level air ke A0
 #define DHT_PIN         D4   // DHT11 data ke D4
 #define RELAY_PIN       D2   // Relay pompa ke D2
+#define CONFIG_BUTTON   D1   // Tombol untuk reset WiFi config (optional)
 
-// inisialisasi DHT
+// ====== Inisialisasi DHT ======
 #define DHTTYPE DHT11
 DHT dht(DHT_PIN, DHTTYPE);
 
-// Global vars
+// ====== Global vars ======
 WiFiClient    espClient;
 PubSubClient  client(espClient);
+WiFiManager   wifiManager;
 
-// Time
+// ====== Timing ======
 unsigned long lastMsg         = 0;
 unsigned long pumpStartTime   = 0;
 unsigned long pumpStopTime    = 0;
+unsigned long buttonPressTime = 0;
 const long    interval        = 5000;     // Interval publish sensor (5 detik)
 const long    maxPumpRunTime  = 480000;   // 8 menit (480 detik) 480000
-const long    minPumpRestTime = 10;   // 5 menit (300 detik) 300000
+const long    minPumpRestTime = 10;       // 5 menit (300 detik) 300000
+const long    buttonHoldTime  = 3000;     // 3 detik untuk reset WiFi
 
-// System State
+// ====== System State ======
 enum PumpMode { AUTO, MANUAL };
 PumpMode currentMode = AUTO;
 bool pumpState = false;
 bool manualPumpCommand = false;
 
-// threshold Settings 
+// ====== Threshold Settings ======
 int thresholdLow  = 25;  // Pompa ON jika water level < 25%
 int thresholdHigh = 75;  // Pompa OFF jika water level > 75%
 
-// safety
+// ====== Safety Flags ======
 bool sensorError = false;
 bool pumpOverTime = false;
 bool pumpInRestPeriod = false;
 
-void setup_wifi() {
-  delay(10);
-  Serial.println();
-  Serial.print("Connecting to ");
-  Serial.println(ssid);
+// ====== WiFi Manager Flags ======
+bool shouldSaveConfig = false;
 
-  WiFi.begin(ssid, wifiPass);
-  while (WiFi.status() != WL_CONNECTED) {
+// Callback untuk menyimpan config
+void saveConfigCallback() {
+  Serial.println("Should save config");
+  shouldSaveConfig = true;
+}
+
+void setup_wifi_manager() {
+  // Set callback untuk save config
+  wifiManager.setSaveConfigCallback(saveConfigCallback);
+  
+  // Custom parameters untuk MQTT
+  WiFiManagerParameter custom_mqtt_server("server", "MQTT Server", mqtt_server, 40);
+  WiFiManagerParameter custom_mqtt_port("port", "MQTT Port", mqtt_port, 6);
+  WiFiManagerParameter custom_mqtt_user("user", "MQTT User", mqtt_user, 50);
+  WiFiManagerParameter custom_mqtt_pass("pass", "MQTT Password", mqtt_pass, 50);
+  
+  // Tambahkan parameter ke WiFi Manager
+  wifiManager.addParameter(&custom_mqtt_server);
+  wifiManager.addParameter(&custom_mqtt_port);
+  wifiManager.addParameter(&custom_mqtt_user);
+  wifiManager.addParameter(&custom_mqtt_pass);
+  
+  // Set timeout untuk portal config (3 menit)
+  wifiManager.setConfigPortalTimeout(180);
+  
+  // Set minimum kualitas sinyal
+  wifiManager.setMinimumSignalQuality(20);
+  
+  // Auto connect dengan last saved credentials
+  if (!wifiManager.autoConnect("SmartPump_Config", "12345678")) {
+    Serial.println("Failed to connect to WiFi and hit timeout");
+    // Fallback ke WiFi manual jika WiFi Manager gagal
+    setup_wifi_fallback();
+  }
+  
+  Serial.println("WiFi connected successfully!");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+  
+  // Simpan parameter MQTT yang baru
+  strcpy(mqtt_server, custom_mqtt_server.getValue());
+  strcpy(mqtt_port, custom_mqtt_port.getValue());
+  strcpy(mqtt_user, custom_mqtt_user.getValue());
+  strcpy(mqtt_pass, custom_mqtt_pass.getValue());
+  
+  if (shouldSaveConfig) {
+    Serial.println("Saving MQTT config...");
+    // Di sini Anda bisa menambahkan kode untuk menyimpan ke EEPROM/SPIFFS
+    shouldSaveConfig = false;
+  }
+}
+
+void setup_wifi_fallback() {
+  Serial.println("Using fallback WiFi credentials...");
+  WiFi.begin(fallback_ssid, fallback_wifiPass);
+  
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
     delay(500);
     Serial.print(".");
+    attempts++;
   }
-  Serial.println();
-  Serial.print("WiFi connected, IP: ");
-  Serial.println(WiFi.localIP());
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println();
+    Serial.print("Fallback WiFi connected, IP: ");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("Fallback WiFi connection failed!");
+  }
+}
+
+void checkConfigButton() {
+  // Cek apakah tombol config ditekan
+  if (digitalRead(CONFIG_BUTTON) == LOW) {
+    if (buttonPressTime == 0) {
+      buttonPressTime = millis();
+    } else if (millis() - buttonPressTime > buttonHoldTime) {
+      Serial.println("Config button held - Resetting WiFi settings...");
+      wifiManager.resetSettings();
+      ESP.restart();
+    }
+  } else {
+    buttonPressTime = 0;
+  }
 }
 
 void callback(char* topic, byte* payload, unsigned int length) {
@@ -86,7 +166,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
 
   Serial.println("MQTT Received - Topic: " + String(topic) + " | Message: " + msg);
 
-  //  kontrol Mode 
+  // ====== Kontrol Mode ======
   if (String(topic) == topic_mode_control) {
     if (msg == "auto") {
       currentMode = AUTO;
@@ -98,7 +178,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
     publishModeStatus();
   }
   
-  // Kontrol Pompa Manual
+  // ====== Kontrol Pompa Manual ======
   else if (String(topic) == topic_pump_control) {
     if (currentMode == MANUAL) {
       if (msg == "on" || msg == "1" || msg == "true" || msg == "nyala") {
@@ -113,7 +193,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
     }
   }
   
-  // set Threshold
+  // ====== Set Threshold ======
   else if (String(topic) == topic_threshold_set) {
     int commaIndex = msg.indexOf(',');
     if (commaIndex > 0) {
@@ -130,11 +210,21 @@ void callback(char* topic, byte* payload, unsigned int length) {
       }
     }
   }
+  
+  // ====== WiFi Reset Command ======
+  else if (String(topic) == "kel4/wifi/reset") {
+    if (msg == "reset" || msg == "true" || msg == "1") {
+      Serial.println("WiFi reset command received via MQTT");
+      wifiManager.resetSettings();
+      delay(1000);
+      ESP.restart();
+    }
+  }
 }
 
 void controlPump(bool state) {
   if (state && !pumpState) {
-    // Cek pompa masih dalam periode istirahat
+    // Cek apakah pompa masih dalam periode istirahat
     if (pumpInRestPeriod && (millis() - pumpStopTime < minPumpRestTime)) {
       Serial.println("Pump in rest period. Cannot start yet.");
       return;
@@ -208,7 +298,9 @@ void publishSystemStatus(float temp, float humidity, int waterLevel) {
   systemStatus += "\"threshold_high\":" + String(thresholdHigh) + ",";
   systemStatus += "\"sensor_error\":" + String(sensorError ? "true" : "false") + ",";
   systemStatus += "\"pump_overtime\":" + String(pumpOverTime ? "true" : "false") + ",";
-  systemStatus += "\"rest_period\":" + String(pumpInRestPeriod ? "true" : "false");
+  systemStatus += "\"rest_period\":" + String(pumpInRestPeriod ? "true" : "false") + ",";
+  systemStatus += "\"wifi_rssi\":" + String(WiFi.RSSI()) + ",";
+  systemStatus += "\"ip_address\":\"" + WiFi.localIP().toString() + "\"";
   systemStatus += "}";
   
   client.publish(topic_system_status, systemStatus.c_str());
@@ -217,6 +309,11 @@ void publishSystemStatus(float temp, float humidity, int waterLevel) {
 void reconnect() {
   while (!client.connected()) {
     Serial.print("Connecting to MQTT...");
+    
+    // Convert port string to int
+    int port = String(mqtt_port).toInt();
+    if (port == 0) port = 1883; // default port
+    
     if (String(mqtt_user).length() == 0) {
       if (client.connect("ESP8266Client")) {
         Serial.println("connected");
@@ -226,15 +323,22 @@ void reconnect() {
         Serial.println("connected with auth");
       }
     }
+    
     if (client.connected()) {
       // Subscribe ke semua topic control
       client.subscribe(topic_pump_control);
       client.subscribe(topic_mode_control);
       client.subscribe(topic_threshold_set);
+      client.subscribe("kel4/wifi/reset");  // Topic untuk reset WiFi
       
       // Publish status awal
       publishModeStatus();
       publishThresholdStatus();
+      
+      // Publish info koneksi
+      String connectMsg = "SmartPump connected - IP: " + WiFi.localIP().toString();
+      client.publish("kel4/system/connect", connectMsg.c_str());
+      
     } else {
       Serial.print("failed rc=");
       Serial.print(client.state());
@@ -246,25 +350,51 @@ void reconnect() {
 
 void setup() {
   Serial.begin(115200);
+  Serial.println();
+  Serial.println("=== Smart Water Pump Controller with WiFi Manager ===");
+  
+  // Setup pins
   pinMode(RELAY_PIN, OUTPUT);
+  pinMode(CONFIG_BUTTON, INPUT_PULLUP);  // Tombol config dengan pull-up
   digitalWrite(RELAY_PIN, HIGH);  // Relay OFF saat start
+  
   dht.begin();
-  setup_wifi();
-  client.setServer(mqtt_server, mqtt_port);
+  
+  // Setup WiFi dengan WiFi Manager
+  setup_wifi_manager();
+  
+  // Setup MQTT dengan parameter dari WiFi Manager
+  int port = String(mqtt_port).toInt();
+  if (port == 0) port = 1883;
+  
+  client.setServer(mqtt_server, port);
   client.setCallback(callback);
   
-  Serial.println("=== Smart Water Pump Controller ===");
+  Serial.println("=== Configuration ===");
+  Serial.println("MQTT Server: " + String(mqtt_server));
+  Serial.println("MQTT Port: " + String(mqtt_port));
+  Serial.println("MQTT User: " + String(mqtt_user));
   Serial.println("Mode: AUTO");
   Serial.println("Threshold Low: " + String(thresholdLow) + "%");
   Serial.println("Threshold High: " + String(thresholdHigh) + "%");
   Serial.println("Setup complete");
+  Serial.println("===================");
 }
 
 void loop() {
+  // Cek koneksi WiFi
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi disconnected! Attempting reconnection...");
+    setup_wifi_manager();
+  }
+  
   if (!client.connected()) {
     reconnect();
   }
   client.loop();
+  
+  // Cek tombol config
+  checkConfigButton();
   
   // Cek safety pompa
   checkPumpSafety();
@@ -273,14 +403,14 @@ void loop() {
   if (now - lastMsg > interval) {
     lastMsg = now;
 
-    // Baca Sensor Water Level 
+    // ====== Baca Sensor Water Level ======
     int rawLevel = analogRead(WATER_LEVEL_PIN);
     int levelPct = map(constrain(rawLevel, 0, 800), 0, 800, 0, 100);
     
     // Deteksi sensor error (nilai tidak masuk akal)
     sensorError = (rawLevel < 5 || rawLevel > 1020);
 
-    // Baca DHT11
+    // ====== Baca DHT11 ======
     float h = dht.readHumidity();
     float t = dht.readTemperature();
 
@@ -289,7 +419,7 @@ void loop() {
       h = 0; t = 0;
     }
 
-    // Logic Control
+    // ====== Logic Control ======
     if (currentMode == AUTO && !sensorError) {
       autoModeLogic(levelPct);
     } else if (currentMode == MANUAL) {
@@ -298,8 +428,8 @@ void loop() {
 
     // ====== Publish Data ======
     if (!sensorError) {
-      Serial.printf("Mode: %s | Humidity: %.1f%% | Temp: %.1f°C | Water: %d%% | Pump: %s\n", 
-                    currentMode == AUTO ? "AUTO" : "MANUAL", h, t, levelPct, pumpState ? "ON" : "OFF");
+      Serial.printf("Mode: %s | Humidity: %.1f%% | Temp: %.1f°C | Water: %d%% | Pump: %s | WiFi: %ddBm\n", 
+                    currentMode == AUTO ? "AUTO" : "MANUAL", h, t, levelPct, pumpState ? "ON" : "OFF", WiFi.RSSI());
 
       // Konversi ke string
       char bufT[8], bufH[8], bufL[8];
